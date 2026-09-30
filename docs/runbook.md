@@ -1,6 +1,6 @@
 # Runbook
 
-Everyday tasks for loetscher.io, with copy-paste commands. Run the commands from the repository folder unless a step says otherwise.
+Everyday tasks for loetscher.io, with copy-paste commands. Run the commands from the repository folder (your clone of `daloet/loetscher_io_azure`) unless a step says otherwise.
 
 ## Edit and preview the site locally
 
@@ -47,32 +47,235 @@ Good to know:
 - You can also double-click `site/index.html` to open it directly. The page then shows **without styles and icon**, because the page links to `/css/style.css` and `/favicon.svg`, which only resolve on a web server. Use the local server for a real preview.
 - The local server does **not** apply `staticwebapp.config.json`. The security headers and the custom 404 page only work on Azure.
 
-## Deploy a change (planned, Step 4)
+## Update the site
 
-Once the GitHub repo and workflow exist, commit and push to `main`. GitHub Actions then deploys `site/` automatically. The exact commands will be added in Step 4. For now, see [How to deploy changes](../README.md#how-to-deploy-changes-planned).
+The repository is `daloet/loetscher_io_azure` on GitHub. The `main` branch is protected (see [security](security.md#branch-protection-on-main)), so **every change goes through a pull request (PR)**, even your own. You cannot push to `main` directly. A **pull request** is a request to merge a branch into `main`; GitHub runs the checks on it first.
 
-## Rotate the deployment token (planned, Step 4)
+1. Start from an up-to-date `main` and create a branch:
+   ```sh
+   git switch main
+   git pull
+   git switch -c my-change
+   ```
+2. Edit the files (for example in `site/`) and preview them locally (see [Preview](#preview)).
+3. Commit. The pre-commit hook runs gitleaks and blocks the commit if it finds a secret:
+   ```sh
+   git add site/
+   git commit -m "Update intro text"
+   ```
+4. Push the branch and open a pull request:
+   ```sh
+   git push -u origin my-change
+   gh pr create --fill
+   ```
+5. Wait for the checks:
+   ```sh
+   gh pr checks --watch
+   ```
+   - **fmt, validate, trivy** always runs; it is required before merging.
+   - **Build and deploy** runs if the PR changes `site/` or the deploy workflow. It creates a **preview environment** (a temporary copy of the site at its own public URL) and posts the URL as a comment on the PR.
+6. Open the preview URL from the PR comment and check the change:
+   ```sh
+   gh pr view --comments
+   ```
+7. Merge. The history must stay linear, so use squash (or rebase), not a merge commit:
+   ```sh
+   gh pr merge --squash --delete-branch
+   ```
+   Merging closes the PR, which deletes its preview environment.
+8. The push to `main` starts the production deployment. Watch it:
+   ```sh
+   gh run list -R daloet/loetscher_io_azure --workflow "Deploy site" --limit 3
+   gh run watch -R daloet/loetscher_io_azure
+   ```
+9. Update your local `main`:
+   ```sh
+   git switch main
+   git pull
+   ```
 
-The **deployment token** is the secret that lets GitHub Actions upload the site. Rotating means replacing it with a new one, for example if it may have leaked. The token exists since Step 3 (Terraform output `deployment_token`). It will be stored as the GitHub secret `AZURE_STATIC_WEB_APPS_API_TOKEN` in Step 4 and must never be printed or pasted into files.
+Good to know:
 
-Planned procedure (usable once the GitHub secret exists in Step 4; setting a secret needs user approval):
+- **Branch must be up to date.** If `main` changed after you opened the PR, GitHub asks you to update the branch first: `gh pr update-branch --rebase`, then wait for the checks again.
+- **Open conversations block the merge.** Resolve all review comments on the PR first.
+- **Preview URLs are public.** Don't put anything private in a PR.
+- **Free tier: at most 3 preview environments.** Close PRs you no longer need.
+- **Redeploy without a change:** `gh workflow run "Deploy site" -R daloet/loetscher_io_azure` deploys `main` to production again.
+
+### Check the live site
+
+Until DNS is done (Step 5), use the default hostname (`terraform output default_host_name` in `infra/`):
+
+```sh
+curl -I https://<swa-default-hostname>/
+```
+
+The response should include `content-security-policy`, `strict-transport-security`, `x-content-type-options`, `referrer-policy`, `permissions-policy`, `x-frame-options`, and `cross-origin-opener-policy`. Check the custom 404 page:
+
+```sh
+curl -s -o /dev/null -w "%{http_code}\n" https://<swa-default-hostname>/does-not-exist
+```
+
+It should print `404`.
+
+## If a preview or deployment fails
+
+1. Find the failed run and read only the failed steps:
+   ```sh
+   gh run list -R daloet/loetscher_io_azure --limit 5
+   gh run view <run-id> -R daloet/loetscher_io_azure --log-failed
+   ```
+2. Match the error to a cause:
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| No "Build and deploy" run at all on a PR | The PR doesn't touch `site/` or the deploy workflow, or it comes from a fork or Dependabot. These get no secrets, so the job is skipped on purpose. | Nothing to fix. Fork and Dependabot PRs get no preview. |
+| Error about the maximum number of staging/preview environments | Free tier allows 3 previews at a time. | Close old PRs (`gh pr list`, `gh pr close <number>`). If an environment stays behind, list and delete it (commands below). |
+| Error about an invalid or missing deployment token | The GitHub secret is missing, or the token was reset in Azure. | [Rotate the deployment token](#rotate-the-deployment-token). |
+| Error parsing `staticwebapp.config.json` | Invalid JSON in the config file. | Fix the file, commit, and push to the same branch. |
+
+List and delete leftover preview environments:
+
+```sh
+az staticwebapp environment list -n swa-loetscher-web -g rg-loetscher-web -o table
+az staticwebapp environment delete -n swa-loetscher-web -g rg-loetscher-web --environment-name <environment-name>
+```
+
+Never delete the `default` environment: that is production.
+
+3. After the fix, run the failed jobs again:
+   ```sh
+   gh run rerun <run-id> -R daloet/loetscher_io_azure --failed
+   ```
+
+## Handle Dependabot pull requests
+
+**Dependabot** is a GitHub bot that opens PRs when a pinned dependency has a new version. It checks weekly for:
+
+- GitHub Actions used in the workflows (it updates the SHA and the version comment), and
+- the `azurerm` Terraform provider (it updates `.terraform.lock.hcl`).
+
+It is set up **not** to propose two kinds of updates, which you do by hand (see the sections below):
+
+- `Azure/static-web-apps-deploy`: Dependabot would "update" it to the old 2021 `v1` tag, which is a downgrade.
+- **Major** versions of `azurerm` (for example 4.x to 5.x): these can contain breaking changes.
+
+To handle a Dependabot PR:
+
+1. List and inspect it:
+   ```sh
+   gh pr list -R daloet/loetscher_io_azure --author "app/dependabot"
+   gh pr view <number> -R daloet/loetscher_io_azure
+   gh pr diff <number> -R daloet/loetscher_io_azure
+   ```
+2. Read the release notes linked in the PR description. Look for breaking changes.
+3. Check that the required check passed:
+   ```sh
+   gh pr checks <number> -R daloet/loetscher_io_azure
+   ```
+   Dependabot PRs get no preview (no secrets), so the deploy job doesn't run on them.
+4. If `main` has moved on, ask Dependabot to rebase by commenting on the PR:
+   ```sh
+   gh pr comment <number> -R daloet/loetscher_io_azure --body "@dependabot rebase"
+   ```
+5. Merge or close:
+   ```sh
+   gh pr merge <number> -R daloet/loetscher_io_azure --squash --delete-branch
+   # or, if you don't want it:
+   gh pr close <number> -R daloet/loetscher_io_azure --comment "Not now: <reason>"
+   ```
+6. For an `azurerm` update, run `terraform init` and `terraform plan` locally after merging and `git pull`. The plan should say `No changes`.
+7. If the update touched `deploy-site.yml`, the merge starts a production deployment. Check that it succeeds (`gh run list ...` as above).
+
+### Update Azure/static-web-apps-deploy by hand
+
+The workflow pins this action to the latest commit of its `v1` **branch**, because the `v1` tag is from 2021 and lacks inputs the workflow uses (`skip_api_build`, `production_branch`).
+
+1. Look up the latest commit on the `v1` branch:
+   ```sh
+   gh api repos/Azure/static-web-apps-deploy/commits/v1 --jq '.sha + "  " + .commit.committer.date'
+   ```
+2. Check what changed since the pinned commit (the SHA in `.github/workflows/deploy-site.yml`):
+   ```sh
+   gh api repos/Azure/static-web-apps-deploy/compare/<old-sha>...<new-sha> --jq '.commits[].commit.message'
+   ```
+   Also open `https://github.com/Azure/static-web-apps-deploy/commit/<new-sha>` and confirm it is in the official `Azure` repository on the `v1` branch.
+3. In a new branch, replace the SHA in **both** `uses:` lines of `deploy-site.yml` and update the date in the comment (`# v1 (branch head, YYYY-MM-DD)`).
+4. Open a PR as in [Update the site](#update-the-site). The preview run tests the new version.
+
+### Update Trivy in CI
+
+Trivy in `.github/workflows/terraform.yml` is a pinned binary with a checksum ([ADR 0012](decisions/0012-trivy-pinned-binary.md)). Dependabot doesn't update it.
+
+1. Pick the new version from <https://github.com/aquasecurity/trivy/releases> (for example `0.75.0`).
+2. Get the SHA-256 for the Linux file from the release's checksums file:
+   ```sh
+   V=0.75.0
+   curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${V}/trivy_${V}_checksums.txt" | grep "trivy_${V}_Linux-64bit.tar.gz"
+   ```
+3. Optional cross-check: download the file and verify its build-provenance attestation:
+   ```sh
+   curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${V}/trivy_${V}_Linux-64bit.tar.gz"
+   shasum -a 256 "trivy_${V}_Linux-64bit.tar.gz"
+   gh attestation verify "trivy_${V}_Linux-64bit.tar.gz" -R aquasecurity/trivy
+   rm "trivy_${V}_Linux-64bit.tar.gz"
+   ```
+4. In a new branch, change `TRIVY_VERSION` and `TRIVY_SHA256` together in `terraform.yml`. Open a PR; the "fmt, validate, trivy" check tests the new binary.
+
+### Upgrade azurerm to a new major version
+
+Do this deliberately, not through Dependabot:
+
+1. In a new branch, change the `azurerm` version constraint in `infra/versions.tf` (for example `~> 5.7.0`).
+2. Read the provider's upgrade guide for that major version.
+3. Update the provider and the lock file for both platforms (Mac and GitHub runners):
+   ```sh
+   cd infra
+   export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+   terraform init -upgrade
+   terraform providers lock -platform=darwin_arm64 -platform=linux_amd64
+   terraform fmt -check -recursive && terraform validate && trivy config .
+   terraform plan
+   ```
+4. Review the plan carefully. Ideally it says `No changes`. Anything that would destroy or replace a resource needs a closer look before you go on.
+5. Commit `versions.tf` and `.terraform.lock.hcl` and open a PR.
+
+## Rotate the deployment token
+
+The **deployment token** is the secret that lets GitHub Actions upload the site. It is stored in the GitHub secret `AZURE_STATIC_WEB_APPS_API_TOKEN` and in the local `infra/terraform.tfstate`. Rotating means replacing it with a new one, for example if it may have leaked. Never print it or paste it into files or chats.
+
+Setting a secret and changing state need your explicit approval when an agent does it.
 
 1. Create a new token in Azure. The old one stops working immediately, so deployments fail until step 3 is done:
    ```sh
-   az staticwebapp secrets reset-api-key -n swa-loetscher-web -g rg-loetscher-web
+   az staticwebapp secrets reset-api-key -n swa-loetscher-web -g rg-loetscher-web -o none
    ```
+   (`-o none` keeps the new token off the screen.)
 2. Let Terraform read the new token into its state, without changing any resources:
    ```sh
    cd infra
    export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
    terraform apply -refresh-only
    ```
-   Read the output, then type `yes`.
+   Read the output, then type `yes`. This updates the state file only.
 3. Pipe the new token straight into the GitHub secret, without printing it:
    ```sh
-   terraform output -raw deployment_token | gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN
+   terraform output -raw deployment_token | gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN -R daloet/loetscher_io_azure
    ```
-4. Update your private backup of `infra/terraform.tfstate`.
+4. Check that a deployment works with the new token:
+   ```sh
+   gh workflow run "Deploy site" -R daloet/loetscher_io_azure
+   gh run watch -R daloet/loetscher_io_azure
+   ```
+5. Update your private backup of `infra/terraform.tfstate`.
+
+## Renew the GitHub CLI token
+
+`gh` is logged in with a **fine-grained personal access token (PAT)**, which has an expiry date. When it expires, `gh` and `git push` fail with an authentication error. Create a new token with the same permissions and log in again as in [setup, section 6](setup.md#6-log-in-to-github-and-get-the-code). Check with:
+
+```sh
+gh auth status
+```
 
 ## Check the budget
 

@@ -1,6 +1,6 @@
 # Security
 
-This page lists the security measures for loetscher.io and **why** each one exists. It separates what is **in place now** (Steps 1 to 3) from what is **planned** for later steps.
+This page lists the security measures for loetscher.io and **why** each one exists. It separates what is **in place now** (Steps 1 to 4) from what is **optional** for later.
 
 ## In place now (Step 1: website)
 
@@ -15,7 +15,7 @@ This page lists the security measures for loetscher.io and **why** each one exis
 
 ### Security headers
 
-**Security headers** are instructions the server sends with every page, telling the browser how to protect the visitor. They are set in `site/staticwebapp.config.json` under `globalHeaders`, so Azure adds them to every response. They take effect once the site is deployed (Step 4).
+**Security headers** are instructions the server sends with every page, telling the browser how to protect the visitor. They are set in `site/staticwebapp.config.json` under `globalHeaders`, so Azure adds them to every response. **Verified (2026-09-30):** after the first deployment, `curl -I` on `https://<swa-default-hostname>/` showed all the headers below, and a missing page returned the custom 404 page with status `404`. How to check: [Check the live site](runbook.md#check-the-live-site). They will be checked again on `loetscher.io` in Step 5.
 
 | Header | Value (short) | Why |
 |--------|---------------|-----|
@@ -92,14 +92,14 @@ Note: the output `budget_id` and Terraform's plan output contain the full resour
 ### Version pinning
 
 - `infra/versions.tf` pins Terraform to `~> 1.16.0` and the `azurerm` provider to `~> 4.81.0`. The `~>` operator allows only patch updates (for example 4.81.1), not new minor versions.
-- `infra/.terraform.lock.hcl` is committed. It records the exact provider version and its checksums for `darwin_arm64` (Apple Silicon Macs) and `linux_amd64` (planned GitHub Actions runners).
+- `infra/.terraform.lock.hcl` is committed. It records the exact provider version and its checksums for `darwin_arm64` (Apple Silicon Macs) and `linux_amd64` (GitHub Actions runners). CI runs `terraform init -lockfile=readonly`, so it fails instead of silently changing the lock file.
 - The provider setting `resource_provider_registrations = "none"` stops Terraform from registering about 20 Azure **resource providers** (the service namespaces a subscription may use) automatically. Since Step 3, `resource_providers_to_register = ["Microsoft.Web"]` registers only the one the project needs. This happens when the provider starts, so already during `terraform plan`, not only on apply.
 
 **Why:** Every run uses the same tested code. The lock file makes `terraform init` refuse a provider download whose checksum does not match, which protects against tampered downloads. Registering nothing by default keeps the subscription's footprint small.
 
 ### trivy config scan
 
-Before each apply, `trivy config` scans `infra/`. In Step 2 it found 0 misconfigurations. `terraform fmt` and `terraform validate` also passed. This check runs before every apply (see [setup](setup.md#8-terraform-first-run)).
+Before each apply, `trivy config` scans `infra/`. In Step 2 it found 0 misconfigurations. `terraform fmt` and `terraform validate` also passed. This check runs before every apply (see [setup](setup.md#8-terraform-first-run)). Since Step 4 it also runs in CI on every pull request (see [Terraform checks in CI](#terraform-checks-in-ci)).
 
 **Why:** trivy finds insecure Terraform settings before they reach Azure, when they are cheap to fix.
 
@@ -148,11 +148,12 @@ The **deployment token** (API key) lets anyone who has it upload content to the 
 
 - It is the Terraform output `deployment_token`, marked `sensitive`, so Terraform hides it on screen.
 - It is stored in plain text in the local `infra/terraform.tfstate` (gitignored). Don't share the state file.
-- It must never be printed. In Step 4 it will be piped straight into a GitHub secret (with user approval):
+- It is never printed. In Step 4 it was piped straight into the GitHub secret `AZURE_STATIC_WEB_APPS_API_TOKEN` (with user approval):
   ```sh
-  terraform output -raw deployment_token | gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN
+  terraform output -raw deployment_token | gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN -R daloet/loetscher_io_azure
   ```
-- Rotation is planned for Step 4. See [Rotate the deployment token](runbook.md#rotate-the-deployment-token-planned-step-4).
+- GitHub hides secret values in workflow logs and never shows them again, not even to the repository owner.
+- If it may have leaked, rotate it: see [Rotate the deployment token](runbook.md#rotate-the-deployment-token).
 
 **Why:** whoever holds the token can replace the website. Keeping it off screens, out of files, and out of Git history makes a leak unlikely; rotation limits the damage if one happens.
 
@@ -160,20 +161,100 @@ The **deployment token** (API key) lets anyone who has it upload content to the 
 
 The `TXT` validation token (`<txt-validation-token>`) is shown by `terraform output dns_records`. It is not hidden, because it is published in public DNS anyway. It only proves ownership of the domain for this one Static Web App.
 
-## Planned
+## In place now (Step 4: GitHub repository and CI/CD)
 
-These measures are part of later steps and are **not in place yet**.
+The repository is the public `daloet/loetscher_io_azure`. **CI/CD** (continuous integration and continuous deployment) means GitHub Actions checks every change and deploys the site automatically.
 
-| Measure | Step | Why |
-|---------|------|-----|
-| **Deployment token in a GitHub secret:** piped straight from Terraform into `AZURE_STATIC_WEB_APPS_API_TOKEN`, never printed. Rotation steps in the runbook. | 4 | Secrets must never end up on screen, in files, or in Git history. |
-| **gitleaks pre-commit hook** | 4 | Scans every commit for secrets and blocks it if one is found. A **pre-commit hook** is a script Git runs before each commit. |
-| **GitHub secret scanning and push protection** | 4 | GitHub checks pushed code for known secret formats and blocks the push. A second safety net after gitleaks. |
-| **Least-privilege workflow permissions** (`permissions: contents: read` at the top level) | 4 | If a workflow is ever compromised, it can do as little damage as possible. |
-| **SHA-pinned GitHub Actions** (full 40-character commit SHA plus a version comment) | 4 | A tag like `v4` can be moved to different code by whoever controls it. A commit SHA cannot. |
-| **Dependabot** | 4 | Opens pull requests when pinned actions or providers have updates, so pinning does not mean falling behind on fixes. |
-| **Branch protection on `main`** | 4 | Stops force-pushes and accidental deletion of the branch that deploys the site. |
-| **Remote Terraform backend** (optional) | Not scheduled | Locking, backups, and encryption for the state file. See [ADR 0006](decisions/0006-local-terraform-state.md). |
+### gitleaks pre-commit hook
+
+`.githooks/pre-commit` runs `gitleaks git --pre-commit --staged` before every commit. A **pre-commit hook** is a script Git runs before each commit. If gitleaks finds something that looks like a secret in the staged changes, the commit is blocked (findings are shown redacted). If gitleaks is not installed, the hook blocks the commit too, instead of silently skipping the check. Each clone must turn it on once with `git config core.hooksPath .githooks` (see [setup](setup.md#turn-on-the-pre-commit-hook)).
+
+**Why:** the cheapest place to stop a secret is on your own Mac, before it is in any commit.
+
+### GitHub secret scanning and push protection
+
+Both are enabled on the repository. **Secret scanning** checks the repository for known secret formats (such as cloud keys and tokens). **Push protection** blocks a `git push` that contains one.
+
+**Why:** a second safety net after gitleaks, run by GitHub on its side. It also catches secrets committed on a clone where the hook was not turned on.
+
+### Git identity with a noreply email
+
+Commits use GitHub's noreply address (`<id>+<user>@users.noreply.github.com`), set per repository (see [setup](setup.md#set-your-git-identity-for-this-repository)).
+
+**Why:** commit authors are public in a public repository. The noreply address keeps the real email out of the history, where it could be collected by spammers.
+
+### GitHub CLI login with a fine-grained token
+
+`gh` and `git push` use a **fine-grained personal access token (PAT)** that only works for `daloet/loetscher_io_azure`, with Contents, Workflows, Secrets, and Administration set to read and write. It has an expiry date. It is entered with `gh auth login --with-token` and stored in the macOS keychain; it is never pasted into chats or files. The remote uses HTTPS with the `gh` credential helper (`gh auth setup-git`).
+
+**Why:** a token limited to one repository and a few permissions can do far less damage if it leaks than a classic token for the whole account. The expiry date limits how long a leaked token stays useful.
+
+### Least-privilege workflow permissions
+
+Each workflow sets `permissions: contents: read` at the top level, so the automatic `GITHUB_TOKEN` can only read the code. Jobs widen this only where needed:
+
+- `Build and deploy` adds `pull-requests: write`, only so the preview URL can be posted as a PR comment.
+- `Close preview environment` has `permissions: {}` (nothing), because it only talks to Azure.
+- `actions/checkout` runs with `persist-credentials: false`, so the token is not left on the runner's disk for later steps.
+- Every job has a `timeout-minutes`.
+
+**Why:** if a workflow or an action is ever compromised, it can do as little as possible.
+
+### Secrets only where they are needed
+
+- The deployment token is used only by the deploy workflow. The Terraform checks workflow has no secrets and no Azure login at all ([ADR 0011](decisions/0011-ci-checks-without-plan-or-oidc.md)).
+- Pull requests from **forks** (copies of the repository owned by someone else) and from Dependabot get no repository secrets from GitHub. The deploy workflow skips them on purpose (`head.repo.full_name == github.repository` and author is not `dependabot[bot]`), so they get no preview. The required check still runs on them.
+- Only pushes to `main` (or a manual run on `main`) deploy to production. The action's `production_branch: "main"` makes sure anything else can only become a preview.
+
+**Why:** a token that is never handed to a job cannot leak from it.
+
+### SHA-pinned GitHub Actions
+
+Every action is pinned to a full 40-character commit SHA, with the version in a comment, for example `actions/checkout@<sha> # v5.1.0`.
+
+- `Azure/static-web-apps-deploy` is pinned to the head of its `v1` **branch**, because its only `v1` tag is from 2021 and lacks inputs the workflow needs. It is updated by hand ([runbook](runbook.md#update-azurestatic-web-apps-deploy-by-hand)).
+
+**Why:** a tag like `v4` can be moved to different code by whoever controls it. A commit SHA cannot.
+
+### Trivy as a checksum-verified binary
+
+CI installs Trivy from a pinned release file and checks its SHA-256 checksum before running it, instead of using `aquasecurity/trivy-action`. That action was hit by a supply-chain compromise in March 2026 (GHSA-69fq-xp46-6x23). See [ADR 0012](decisions/0012-trivy-pinned-binary.md).
+
+**Why:** the workflow only runs the exact file that was reviewed.
+
+### Terraform checks in CI
+
+`.github/workflows/terraform.yml` runs on every pull request: `terraform fmt -check`, `terraform init -backend=false -lockfile=readonly`, `terraform validate`, and `trivy config` (any finding fails). It does not run `plan` and does not log in to Azure ([ADR 0011](decisions/0011-ci-checks-without-plan-or-oidc.md)).
+
+**Why:** insecure or broken Terraform code is caught before it can be merged.
+
+### Dependabot
+
+`.github/dependabot.yml` checks weekly for new versions of the pinned GitHub Actions and of the `azurerm` provider and opens pull requests. It skips `Azure/static-web-apps-deploy` (it would propose a downgrade to the 2021 tag) and major `azurerm` versions (they can break things and need a local plan first). **Dependabot alerts** and **Dependabot security updates** are also enabled on the repository. See [Handle Dependabot pull requests](runbook.md#handle-dependabot-pull-requests).
+
+**Why:** pinning should not mean falling behind on security fixes. Dependabot proposes updates; you still review and merge them.
+
+### Branch protection on main
+
+`main` is the branch that deploys to production. Its protection rules:
+
+| Rule | What it means |
+|------|---------------|
+| Pull request required (0 approvals) | Nobody can push to `main` directly; every change goes through a PR. No approval is needed, because this is a one-person project. |
+| Required status check `fmt, validate, trivy`, strict | The Terraform checks must pass, and the branch must be up to date with `main` before merging. |
+| Enforced for admins | The rules apply to the repository owner too. |
+| Linear history | No merge commits; use squash or rebase merges. |
+| Conversation resolution required | All review comments must be resolved before merging. |
+| No force pushes, no deletion | `main`'s history cannot be rewritten, and the branch cannot be deleted. |
+
+**Why:** every change gets the automatic checks and a preview before it goes live, and nobody (including a stolen token) can quietly rewrite what was deployed. The everyday workflow: [Update the site](runbook.md#update-the-site).
+
+## Optional (not scheduled)
+
+| Measure | Why |
+|---------|-----|
+| **Remote Terraform backend** | Locking, backups, and encryption for the state file. See [ADR 0006](decisions/0006-local-terraform-state.md). |
+| **`terraform plan` in CI with OIDC** | Would show a plan on every PR, without storing Azure passwords in GitHub. Needs a remote backend first. See [ADR 0011](decisions/0011-ci-checks-without-plan-or-oidc.md). |
 
 ## Related
 
@@ -182,4 +263,6 @@ These measures are part of later steps and are **not in place yet**.
 - [ADR 0006: Local Terraform state](decisions/0006-local-terraform-state.md)
 - [ADR 0007: Subscription ID via environment variable](decisions/0007-subscription-id-via-env-var.md)
 - [ADR 0010: Apex loetscher.io as the canonical host](decisions/0010-apex-as-canonical-host.md)
+- [ADR 0011: CI checks without terraform plan or OIDC](decisions/0011-ci-checks-without-plan-or-oidc.md)
+- [ADR 0012: Trivy in CI as a checksum-verified pinned binary](decisions/0012-trivy-pinned-binary.md)
 - [Runbook](runbook.md)
