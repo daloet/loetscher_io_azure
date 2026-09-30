@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Never commit terraform.tfvars.
+
+# Required: receives the subscription budget alerts.
+budget_alert_email = "you@example.com"
+
+# Optional: uncomment to override the defaults.
+# budget_amount       = 5
+# location                = "westeurope" # resource group region
+# static_web_app_location = "eastus2"    # must support Static Web Apps
+# resource_group_name = "rg-loetscher-web"
+# static_web_app_name = "swa-loetscher-web"
+# apex_domain         = "loetscher.io"
+
+# Set to true only AFTER the www CNAME record exists at Hostpoint
+# (Azure validates it immediately and the apply fails otherwise).
+# enable_www_domain = false
+
+# tags = {
+#   project    = "loetscher.io"
+#   managed_by = "terraform"
+# }
