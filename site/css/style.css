@@ -1,0 +1,131 @@
+/* loetscher.io stylesheet
+   Mobile first: base styles target small screens, the media query
+   further down adjusts for larger screens. */
+
+/* ---- Colors (light mode is the default) ---- */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --text: #1a1a1a;     /* ~17:1 on --bg */
+  --muted: #4a4a4a;    /* ~8.9:1 on --bg */
+  --accent: #0b57d0;   /* ~6.4:1 on --bg */
+  --focus: #0b57d0;
+}
+
+/* ---- Dark mode: only the variables change ---- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --text: #eaeaea;   /* ~15.6:1 on --bg */
+    --muted: #b3b3b3;  /* ~8.9:1 on --bg */
+    --accent: #8ab4f8; /* ~8.9:1 on --bg */
+    --focus: #8ab4f8;
+  }
+}
+
+/* ---- Base ---- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  color: var(--text);
+  /* System font stack: no web fonts are downloaded */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+}
+
+.container {
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem;
+}
+
+h1 {
+  margin: 0 0 0.75rem;
+  font-size: 2rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.intro {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+/* ---- Links ---- */
+a {
+  color: var(--accent);
+  text-underline-offset: 0.2em;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Visible focus ring for keyboard users */
+a:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.links a {
+  display: inline-block;
+  padding: 0.25rem 0; /* larger tap target on mobile */
+  font-weight: 600;
+}
+
+/* ---- Larger screens ---- */
+@media (min-width: 48rem) {
+  h1 {
+    font-size: 2.75rem;
+  }
+
+  .container {
+    padding: 3rem 2rem;
+  }
+}
+
+/* ---- Respect users who prefer less motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
