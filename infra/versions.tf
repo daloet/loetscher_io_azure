@@ -8,7 +8,7 @@ terraform {
     azurerm = {
       source = "hashicorp/azurerm"
       # Patch updates only; bump the minor deliberately (Dependabot will propose it).
-      version = "~> 4.81.0"
+      version = "~> 5.7.0"
     }
   }
 }
