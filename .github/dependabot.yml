@@ -8,6 +8,11 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "ci"
+    ignore:
+      # Pinned to the v1 branch head on purpose: the only release tag (v1) is
+      # from 2021 and lacks inputs we use, so Dependabot keeps proposing a
+      # downgrade. Update this one by hand (see docs/runbook.md).
+      - dependency-name: "Azure/static-web-apps-deploy"
 
   # Proposes azurerm provider bumps (updates .terraform.lock.hcl).
   - package-ecosystem: "terraform"
@@ -17,3 +22,8 @@ updates:
     open-pull-requests-limit: 2
     commit-message:
       prefix: "infra"
+    ignore:
+      # Major provider upgrades can contain breaking changes and need a local
+      # `terraform plan` review first, so do them deliberately by hand.
+      - dependency-name: "hashicorp/azurerm"
+        update-types: ["version-update:semver-major"]
