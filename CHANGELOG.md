@@ -2,6 +2,23 @@
 
 One entry per completed step, newest first.
 
+## 2026-09-30: Step 4: GitHub repo and CI/CD
+
+- Repository: public [`daloet/loetscher_io_azure`](https://github.com/daloet/loetscher_io_azure). The user created it on github.com with an "Initial commit"; the local project history was rebased on top of it. The remote uses HTTPS with the `gh` credential helper (`gh auth setup-git`).
+- `gh` now logs in with a fine-grained personal access token limited to this repository (Contents, Workflows, Secrets, Administration: read and write), entered with `gh auth login --with-token`. It expires; renew it with the same permissions.
+- Git identity is set per repository with the GitHub noreply email, so the real email stays out of the public history.
+- Added `.githooks/pre-commit`: runs `gitleaks git --pre-commit --staged` and blocks commits with secrets (or when gitleaks is missing). Each clone enables it with `git config core.hooksPath .githooks`.
+- Added `.github/workflows/deploy-site.yml` ("Deploy site"): push to `main` deploys to production; pull requests from this repository get a preview environment (URL posted as a PR comment), deleted when the PR closes; fork and Dependabot PRs are skipped (no secrets); manual runs; concurrency (superseded previews are cancelled). `Azure/static-web-apps-deploy` is pinned to the `v1` branch head, because the `v1` tag is from 2021.
+- Added `.github/workflows/terraform.yml` ("Terraform checks"): `fmt -check`, `init -backend=false -lockfile=readonly`, `validate`, and Trivy from a checksum-verified pinned binary. Runs on every PR as the required check `fmt, validate, trivy`. No `plan` and no Azure login ([ADR 0011](docs/decisions/0011-ci-checks-without-plan-or-oidc.md)); Trivy not via `trivy-action` because of the March 2026 supply-chain compromise GHSA-69fq-xp46-6x23 ([ADR 0012](docs/decisions/0012-trivy-pinned-binary.md)).
+- All actions pinned to full commit SHAs; top-level `permissions: contents: read`, widened per job only where needed.
+- Added `.github/dependabot.yml`: weekly updates for GitHub Actions and Terraform. It ignores `Azure/static-web-apps-deploy` (it would propose a downgrade to the 2021 tag) and major `azurerm` versions; both are updated by hand. Trivy in CI is also bumped by hand. Dependabot opened its first PRs right away; see [Handle Dependabot pull requests](docs/runbook.md#handle-dependabot-pull-requests).
+- Set the Actions secret `AZURE_STATIC_WEB_APPS_API_TOKEN` by piping `terraform output -raw deployment_token` into `gh secret set` (never printed).
+- Enabled secret scanning, push protection, Dependabot alerts, and Dependabot security updates.
+- Branch protection on `main`: PR required (0 approvals, solo developer), required check `fmt, validate, trivy` (branch must be up to date), enforced for admins, linear history, conversation resolution required, no force pushes or deletion. **Every change now goes through a pull request.**
+- First production deployment succeeded. All security headers were verified with `curl -I` on `<swa-default-hostname>`, and a missing page returns the custom 404 page with status `404`. The custom domain DNS at Hostpoint is still pending (Step 5).
+- Docs: [setup](docs/setup.md) section 6 (PAT login, clone, Git identity, pre-commit hook) and new [section 10](docs/setup.md#10-github-repository-and-cicd); [runbook](docs/runbook.md): [Update the site](docs/runbook.md#update-the-site) via PR, preview troubleshooting, Dependabot PRs, manual updates (SWA action, Trivy, azurerm major), token rotation (now live), PAT renewal; Step 4 measures in [security](docs/security.md#in-place-now-step-4-github-repository-and-cicd); new architecture diagram; README deploy and teardown steps with the correct repository name.
+- Recorded decisions [0011](docs/decisions/0011-ci-checks-without-plan-or-oidc.md) and [0012](docs/decisions/0012-trivy-pinned-binary.md); updated [0006](docs/decisions/0006-local-terraform-state.md) to link to 0011.
+
 ## 2026-09-29: Step 3: Static Web App
 
 - Split `infra/`: `budget.tf` holds the budget (unchanged), `main.tf` now holds the resource group, the Static Web App, and the custom domains.

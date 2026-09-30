@@ -61,17 +61,70 @@ trivy --version
 
 Each command should print a version number.
 
-## 6. Log in to GitHub
+## 6. Log in to GitHub and get the code
+
+The code lives in the public GitHub repository **`daloet/loetscher_io_azure`**. (It was created on github.com with an "Initial commit"; the project history sits on top of it.)
+
+### Create a fine-grained access token
+
+`gh` (and, through it, `git push`) logs in with a **fine-grained personal access token (PAT)**: a password-like key that only works for the repositories and permissions you choose.
+
+1. On github.com, open **Settings** > **Developer settings** > **Personal access tokens** > **Fine-grained tokens** > **Generate new token**.
+2. Give it a name (for example `loetscher-io-cli`) and an **expiration date**.
+3. Under **Repository access**, choose **Only select repositories** and pick `daloet/loetscher_io_azure`.
+4. Under **Repository permissions**, set to **Read and write**:
+   - **Contents** (push code)
+   - **Workflows** (change files in `.github/workflows/`)
+   - **Secrets** (set `AZURE_STATIC_WEB_APPS_API_TOKEN`)
+   - **Administration** (repository settings such as branch protection)
+
+   **Metadata: Read** is added automatically.
+5. Select **Generate token** and copy it. GitHub shows it only once.
+
+Never paste the token into a chat, a file, an issue, or a commit.
+
+### Log in with the token
 
 ```sh
-gh auth login
+gh auth login --with-token
 ```
 
-Follow the prompts: choose **GitHub.com**, **HTTPS**, and **Login with a web browser**. Check the result:
+The command waits for input. Paste the token, press `Enter`, then press `Ctrl+D`. The token goes straight into `gh`'s secure storage (the macOS keychain). Then let Git use `gh` for HTTPS logins, so `git push` needs no separate password:
 
 ```sh
+gh auth setup-git
 gh auth status
 ```
+
+**Token expiry:** when the PAT expires, `gh` and `git push` stop working. Create a new token with the same repository and permissions, and run `gh auth login --with-token` again. See [Renew the GitHub CLI token](runbook.md#renew-the-github-cli-token).
+
+### Clone the repository
+
+```sh
+git clone https://github.com/daloet/loetscher_io_azure.git
+cd loetscher_io_azure
+```
+
+The remote uses HTTPS (not SSH); the credential helper from `gh auth setup-git` handles the login.
+
+### Set your Git identity for this repository
+
+Every commit records a name and an email, and in a public repository everyone can read them. Use GitHub's **noreply address** so your real email stays private. Find it on github.com under **Settings** > **Emails** ("Keep my email addresses private"). Set it for this repository only (no `--global`):
+
+```sh
+git config user.name "<your-name>"
+git config user.email "<id>+<user>@users.noreply.github.com"
+```
+
+### Turn on the pre-commit hook
+
+The repository contains a **pre-commit hook** (a script Git runs before each commit) in `.githooks/pre-commit`. It runs `gitleaks git --pre-commit --staged` and blocks the commit if it finds a secret. Git does not use it automatically. **Every fresh clone needs this command once:**
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Check it: `git config core.hooksPath` should print `.githooks`. If gitleaks is not installed, the hook blocks every commit and tells you to install it (step 4).
 
 ## 7. Log in to Azure
 
@@ -96,7 +149,9 @@ az account set --subscription "<your-subscription-name-or-id>"
 
 ## 8. Terraform first run
 
-This creates the subscription budget (Step 2), on its own, before anything else. All commands run in the `infra/` folder. Section 9 then adds the Static Web App.
+This creates the subscription budget (Step 2), on its own, before anything else. All commands run in the `infra/` folder of your clone. Section 9 then adds the Static Web App.
+
+Note: `main` is protected, so code changes (even to `infra/`) go through a pull request; see [Update the site](runbook.md#update-the-site). The Terraform commands themselves always run locally.
 
 ### Before you start: check your Azure role
 
@@ -190,7 +245,7 @@ Good to know before you start:
    ```
    The hostname looks like `<random-name>.azurestaticapps.net` (`<swa-default-hostname>` in these docs). The TXT value is `<txt-validation-token>`. Neither is a secret, but these docs don't copy the real values.
 
-   **Never** run `terraform output deployment_token` without `| gh secret set ...`. The token is a secret; it will be piped straight into GitHub in Step 4.
+   **Never** run `terraform output deployment_token` without `| gh secret set ...`. The token is a secret; it is piped straight into GitHub in [section 10](#10-github-repository-and-cicd).
 
 ### DNS records at Hostpoint
 
@@ -217,7 +272,58 @@ Good to know before you start:
 
 Planned (Step 5): make `loetscher.io` the default domain in the Azure portal, so `www` redirects to it. See [ADR 0010](decisions/0010-apex-as-canonical-host.md).
 
+## 10. GitHub repository and CI/CD
+
+This connects the repository to the Static Web App and locks down `main` (Step 4). You need the logins from section 6 and the Terraform state from section 9. The workflows themselves are already in the repository:
+
+- `.github/workflows/deploy-site.yml` ("Deploy site"): deploys `site/` to production on pushes to `main`, and to preview environments for pull requests.
+- `.github/workflows/terraform.yml` ("Terraform checks"): runs `fmt`, `validate`, and Trivy on every pull request.
+- `.github/dependabot.yml`: weekly update PRs for actions and the `azurerm` provider.
+
+See [architecture](architecture.md) for how they fit together.
+
+1. Store the deployment token as a GitHub secret. It is piped straight from Terraform into GitHub and never shown:
+   ```sh
+   cd infra
+   export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+   terraform output -raw deployment_token | gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN -R daloet/loetscher_io_azure
+   gh secret list -R daloet/loetscher_io_azure
+   ```
+   `gh secret list` shows only the name and date, never the value.
+2. Push `main` (only possible before branch protection is on; afterwards everything goes through pull requests). The push starts the first production deployment:
+   ```sh
+   git push -u origin main
+   gh run watch -R daloet/loetscher_io_azure
+   ```
+3. Turn on GitHub's security features: **secret scanning**, **push protection**, **Dependabot alerts**, and **Dependabot security updates**. In the browser: repository **Settings** > **Code security**. Or with `gh`:
+   ```sh
+   gh api -X PATCH repos/daloet/loetscher_io_azure \
+     -f "security_and_analysis[secret_scanning][status]=enabled" \
+     -f "security_and_analysis[secret_scanning_push_protection][status]=enabled"
+   gh api -X PUT repos/daloet/loetscher_io_azure/vulnerability-alerts
+   gh api -X PUT repos/daloet/loetscher_io_azure/automated-security-fixes
+   ```
+4. Protect `main`. The required check `fmt, validate, trivy` must have run at least once (open a pull request, or run the "Terraform checks" workflow by hand) so GitHub knows its name. In the browser: **Settings** > **Branches**. Or with `gh`:
+   ```sh
+   gh api -X PUT repos/daloet/loetscher_io_azure/branches/main/protection --input - <<'EOF'
+   {
+     "required_status_checks": { "strict": true, "checks": [ { "context": "fmt, validate, trivy", "app_id": 15368 } ] },
+     "enforce_admins": true,
+     "required_pull_request_reviews": { "required_approving_review_count": 0, "dismiss_stale_reviews": true },
+     "restrictions": null,
+     "required_linear_history": true,
+     "required_conversation_resolution": true,
+     "allow_force_pushes": false,
+     "allow_deletions": false
+   }
+   EOF
+   ```
+   What each setting means is explained in [security](security.md#branch-protection-on-main).
+5. Check the deployed site on its default hostname, as in [Check the live site](runbook.md#check-the-live-site).
+
+From now on, every change goes through a pull request: see [Update the site](runbook.md#update-the-site).
+
 ## Next steps
 
 - Edit and preview the website: [runbook](runbook.md#edit-and-preview-the-site-locally).
-- Planned: steps for the GitHub repo and CI/CD (Step 4) and DNS verification (Step 5) will be added here as they are completed.
+- Planned: DNS verification and the `www` redirect (Step 5) will be added here once completed.

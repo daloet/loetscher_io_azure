@@ -14,6 +14,8 @@ An **architecture decision record (ADR)** is a short note that explains one impo
 | [0008](0008-swa-region-eastus2.md) | Static Web App region eastus2 | Accepted | 2026-09-29 |
 | [0009](0009-two-step-custom-domain-rollout.md) | Two-step custom domain rollout | Accepted | 2026-09-29 |
 | [0010](0010-apex-as-canonical-host.md) | Apex loetscher.io as the canonical host | Accepted | 2026-09-29 |
+| [0011](0011-ci-checks-without-plan-or-oidc.md) | CI checks without terraform plan or OIDC | Accepted | 2026-09-30 |
+| [0012](0012-trivy-pinned-binary.md) | Trivy in CI as a checksum-verified pinned binary | Accepted | 2026-09-30 |
 
 ## Template
 

@@ -24,6 +24,6 @@ Bad, and how to handle it:
 - **No locking.** Two runs at the same time could damage the state. Only one person runs Terraform, so this is acceptable.
 - **No automatic backup.** If the file is lost, Terraform no longer knows about the resources. Keep a private backup after each apply.
 - **Contains secrets in plain text.** Today the alert email; after Step 3 also the Static Web App deployment token. Never commit or share it. See [security](../security.md#local-terraform-state).
-- **CI cannot use it.** A Terraform workflow in GitHub Actions (optional, Step 4) would need a remote backend.
+- **CI cannot use it.** A `terraform plan` in GitHub Actions would need a remote backend. So CI only runs static checks (fmt, validate, trivy); see [ADR 0011](0011-ci-checks-without-plan-or-oidc.md).
 
 Later option: move to an **Azure Storage backend** or the **HCP Terraform free tier**. Both add locking and backups. This would get its own ADR.
