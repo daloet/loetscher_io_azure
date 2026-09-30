@@ -26,7 +26,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # PR runs are grouped per PR number, NOT per ref: when a PR is merged, its
+  # "closed" run has github.ref = refs/heads/main and would otherwise share the
+  # production group and cancel the production deploy triggered by the merge.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   # Superseded PR preview runs are cancelled; production deploys run to completion.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
