@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Keeps SHA-pinned actions (and their version comments) up to date.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+
+  # Proposes azurerm provider bumps (updates .terraform.lock.hcl).
+  - package-ecosystem: "terraform"
+    directory: "/infra"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "infra"

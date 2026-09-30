@@ -1,0 +1,90 @@
+name: Terraform checks
+
+# Static checks for /infra: fmt, validate, and a Trivy misconfiguration scan.
+#
+# Deliberately NO `terraform plan` and NO Azure login (OIDC) here:
+# - Terraform state is local (see docs/decisions/0006-local-terraform-state.md),
+#   so a plan in CI would have no state and would show everything as "create".
+# - The budget lives at subscription scope, so even a read-only plan would need
+#   subscription-level read access, which conflicts with the RG-scoped
+#   least-privilege model.
+# Optional later step: add a remote backend (e.g. Azure Storage) together with
+# an OIDC federated credential, then run `terraform plan` on PRs.
+
+on:
+  # Runs on EVERY pull request (no paths filter) because it is the required
+  # status check in branch protection: a required check that is skipped by a
+  # paths filter would block site-only PRs forever. It's fast and free.
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Trivy is installed from a pinned release binary with checksum verification
+  # instead of aquasecurity/trivy-action / setup-trivy, which were hit by a
+  # supply-chain compromise in March 2026 (GHSA-69fq-xp46-6x23).
+  # The v0.74.0 release is an immutable GitHub release; the SHA-256 below is
+  # from trivy_0.74.0_checksums.txt and was cross-checked against the
+  # release's GitHub build-provenance attestation. Dependabot does not update
+  # this: bump version and checksum together, by hand.
+  TRIVY_VERSION: "0.74.0"
+  TRIVY_SHA256: "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+
+jobs:
+  checks:
+    name: fmt, validate, trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init (no backend)
+        run: terraform init -backend=false -input=false -lockfile=readonly
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: Install Trivy (pinned binary, checksum verified)
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$tarball" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
+          echo "${TRIVY_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir -p trivy-bin
+          tar -xzf "$tarball" -C trivy-bin trivy
+          echo "${RUNNER_TEMP}/trivy-bin" >> "$GITHUB_PATH"
+
+      - name: Trivy misconfiguration scan
+        # All severities fail the build (infra is currently clean).
+        # --skip-check-update uses the checks embedded in the pinned binary
+        # instead of pulling an unpinned checks bundle at runtime.
+        run: trivy config --skip-check-update --exit-code 1 .

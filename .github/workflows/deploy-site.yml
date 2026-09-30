@@ -1,0 +1,84 @@
+name: Deploy site
+
+# Deploys /site to the Azure Static Web App "swa-loetscher-web".
+# - push to main          -> production deployment
+# - pull request to main  -> preview environment (URL posted as a PR comment)
+# - pull request closed   -> preview environment deleted
+# The deployment token lives only in the GitHub secret
+# AZURE_STATIC_WEB_APPS_API_TOKEN (never in the repository).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-site.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+# Least privilege by default; jobs widen this only where needed.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR preview runs are cancelled; production deploys run to completion.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build_and_deploy:
+    name: Build and deploy
+    # Production only from main (push or manual run). PR previews only for
+    # PRs from this repository: fork PRs get no secrets, so skip them.
+    if: >-
+      (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' &&
+       github.event.action != 'closed' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # SWA posts the preview URL as a PR comment
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@4d27395796ac319302594769cfe812bd207490b1 # v1 (branch head, 2024-09-11)
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }} # only for PR comments
+          action: upload
+          app_location: "site"
+          output_location: ""
+          skip_app_build: true
+          skip_api_build: true
+          # Anything not from main becomes a preview, never production.
+          production_branch: "main"
+
+  close_pull_request:
+    name: Close preview environment
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No checkout and no GitHub API calls: the close action only talks to
+    # Azure with the SWA deployment token, so GITHUB_TOKEN needs no scopes.
+    permissions: {}
+    steps:
+      - name: Close preview environment
+        uses: Azure/static-web-apps-deploy@4d27395796ac319302594769cfe812bd207490b1 # v1 (branch head, 2024-09-11)
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: close
+          app_location: "site"
