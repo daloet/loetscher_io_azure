@@ -35,11 +35,14 @@ jobs:
     name: Build and deploy
     # Production only from main (push or manual run). PR previews only for
     # PRs from this repository: fork PRs get no secrets, so skip them.
+    # Dependabot PRs don't get Actions secrets either, so they get no preview
+    # (the required "fmt, validate, trivy" check still runs on them).
     if: >-
       (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' &&
        github.event.action != 'closed' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -69,7 +72,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # No checkout and no GitHub API calls: the close action only talks to
